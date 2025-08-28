@@ -9,14 +9,27 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const path = require("path");
 const axios = require("axios");
 const FormData = require("form-data");
+const fs = require("fs");
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors({ origin: "*" }));
+const corsOptions = {
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "2mb" }));
 // CORS preflight for all routes
-app.options("*", cors());
+app.options("*", cors(corsOptions));
+
+// Multer upload config (max size configurable via env MAX_UPLOAD_MB)
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 8);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+});
 
 // Health
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -248,17 +261,26 @@ app.post("/api/review", async (req, res) => {
   }
 });
 
-// Serve client build in production (single service deployment)
+// Serve client build in production (single service deployment) — guard if missing
 if (process.env.NODE_ENV === "production") {
   const clientDist = path.join(__dirname, "../../client/dist");
-  app.use(express.static(clientDist));
-  // SPA fallback (exclude API routes)
-  app.get("*", (req, res) => {
-    if (req.path.startsWith("/api/"))
-      return res.status(404).json({ error: "Not found" });
-    res.sendFile(path.join(clientDist, "index.html"));
-  });
+  if (fs.existsSync(clientDist)) {
+    app.use(express.static(clientDist));
+    // SPA fallback (exclude API routes)
+    app.get("*", (req, res) => {
+      if (req.path.startsWith("/api/"))
+        return res.status(404).json({ error: "Not found" });
+      res.sendFile(path.join(clientDist, "index.html"));
+    });
+  } else {
+    console.log("Client build not found. Skipping static file serving.");
+  }
 }
+
+// Catch-all for unknown API routes to ensure CORS headers are added
+app.use("/api", (req, res) => {
+  return res.status(404).json({ error: "Not found" });
+});
 
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
