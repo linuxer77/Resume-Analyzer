@@ -7,6 +7,8 @@ const mammoth = require("mammoth");
 const { z } = require("zod");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const path = require("path");
+const axios = require("axios");
+const FormData = require("form-data");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -14,61 +16,141 @@ const port = process.env.PORT || 5000;
 app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "2mb" }));
 
+// Configurable upload size (in MB)
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 8);
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
 });
 
 // Health
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-// Upload endpoint (PDF/DOCX to text)
-app.post("/api/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-    const mime = req.file.mimetype;
-    const ext = path.extname(req.file.originalname || "").toLowerCase();
-    let text = "";
+async function ocrWithOCRSpace(buffer, filename) {
+  const apiKey = process.env.OCR_SPACE_API_KEY;
+  if (!apiKey) return null;
+  const form = new FormData();
+  form.append("apikey", apiKey);
+  form.append("file", buffer, { filename: filename || "upload.pdf" });
+  form.append("language", "eng");
+  form.append("isTable", "true");
+  form.append("OCREngine", "2");
 
-    if (mime === "application/pdf" || ext === ".pdf") {
-      const data = await pdfParse(req.file.buffer);
-      text = data.text || "";
-    } else if (
-      mime ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      ext === ".docx"
-    ) {
-      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
-      text = result.value || "";
-    } else if (mime === "text/plain" || ext === ".txt") {
-      text = req.file.buffer.toString("utf-8");
-    } else if (mime === "application/octet-stream") {
-      // Fallback by extension when browser doesn't set a specific mimetype
-      if (ext === ".pdf") {
+  const resp = await axios.post("https://api.ocr.space/parse/image", form, {
+    headers: form.getHeaders(),
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+    timeout: 60000,
+  });
+  const result = resp.data;
+  if (!result || result.IsErroredOnProcessing) return null;
+  const pages = result.ParsedResults || [];
+  return pages
+    .map((p) => p.ParsedText || "")
+    .join("\n")
+    .trim();
+}
+
+// Upload endpoint (PDF/DOCX/TXT to text) with Multer error handling
+app.post("/api/upload", (req, res) => {
+  upload.single("file")(req, res, async (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        const code = err.code;
+        if (code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({
+            error: `File too large. Max allowed is ${MAX_UPLOAD_MB}MB`,
+          });
+        }
+        return res.status(400).json({ error: `Upload error: ${code}` });
+      }
+      console.error("Upload error:", err);
+      return res.status(400).json({ error: "Failed to receive file" });
+    }
+
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+      const mime = req.file.mimetype || "";
+      const ext = path.extname(req.file.originalname || "").toLowerCase();
+      let text = "";
+
+      console.log("/api/upload", {
+        name: req.file.originalname,
+        mime,
+        size: req.file.size,
+        ext,
+      });
+
+      if (mime === "application/pdf" || ext === ".pdf") {
         const data = await pdfParse(req.file.buffer);
-        text = data.text || "";
-      } else if (ext === ".docx") {
+        text = (data.text || "").replace(/\u0000/g, "");
+      } else if (
+        mime ===
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        ext === ".docx"
+      ) {
         const result = await mammoth.extractRawText({
           buffer: req.file.buffer,
         });
-        text = result.value || "";
-      } else if (ext === ".txt") {
-        text = req.file.buffer.toString("utf-8");
+        text = (result.value || "").replace(/\u0000/g, "");
+      } else if (mime === "text/plain" || ext === ".txt") {
+        text = req.file.buffer.toString("utf-8").replace(/\u0000/g, "");
+      } else if (mime === "application/octet-stream") {
+        // Fallback by extension when browser doesn't set a specific mimetype
+        if (ext === ".pdf") {
+          const data = await pdfParse(req.file.buffer);
+          text = data.text || "";
+        } else if (ext === ".docx") {
+          const result = await mammoth.extractRawText({
+            buffer: req.file.buffer,
+          });
+          text = result.value || "";
+        } else if (ext === ".txt") {
+          text = req.file.buffer.toString("utf-8");
+        }
       }
-    }
 
-    if (!text) {
-      return res.status(400).json({
-        error:
-          "Unsupported file type. Please upload PDF (.pdf), DOCX (.docx), or TXT (.txt)",
-      });
-    }
+      // If no extractable text (e.g., scanned PDF), attempt OCR if enabled
+      if (!text || !text.trim()) {
+        let ocrText = null;
+        if (process.env.OCR_ENABLE === "true") {
+          try {
+            ocrText = await ocrWithOCRSpace(
+              req.file.buffer,
+              req.file.originalname
+            );
+          } catch (ocrErr) {
+            console.error(
+              "OCR error:",
+              ocrErr?.response?.data || ocrErr.message
+            );
+          }
+        }
+        if (ocrText && ocrText.trim()) {
+          return res.json({ text: ocrText });
+        }
 
-    return res.json({ text });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Failed to parse file" });
-  }
+        return res.status(422).json({
+          error:
+            "No extractable text found. Your file may be a scanned/image-only PDF.",
+          hint:
+            process.env.OCR_ENABLE === "true"
+              ? "OCR attempted but failed. Please upload a text-based PDF/DOCX or paste text."
+              : "Enable OCR by setting OCR_ENABLE=true and OCR_SPACE_API_KEY in server env.",
+          bytes: req.file.size,
+          name: req.file.originalname,
+          ext,
+          mime,
+        });
+      }
+
+      return res.json({ text });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: "Failed to parse file" });
+    }
+  });
 });
 
 const ReviewSchema = z.object({

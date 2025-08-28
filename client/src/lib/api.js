@@ -1,12 +1,9 @@
 import axios from "axios";
 
+const DEFAULT_PROD_API = "https://resume-analyzer-1-7jse.onrender.com";
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  (import.meta.env?.DEV
-    ? "http://localhost:5000"
-    : typeof window !== "undefined"
-    ? window.location.origin
-    : "");
+  (import.meta.env?.DEV ? "http://localhost:5000" : DEFAULT_PROD_API);
 
 export async function uploadFile(file) {
   const form = new FormData();
