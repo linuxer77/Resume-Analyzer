@@ -15,13 +15,8 @@ const port = process.env.PORT || 5000;
 
 app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "2mb" }));
-
-// Configurable upload size (in MB)
-const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 8);
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
-});
+// CORS preflight for all routes
+app.options("*", cors());
 
 // Health
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
