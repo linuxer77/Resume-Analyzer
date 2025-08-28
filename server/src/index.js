@@ -27,19 +27,43 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
     const mime = req.file.mimetype;
+    const ext = path.extname(req.file.originalname || "").toLowerCase();
     let text = "";
-    if (mime === "application/pdf") {
+
+    if (mime === "application/pdf" || ext === ".pdf") {
       const data = await pdfParse(req.file.buffer);
       text = data.text || "";
     } else if (
       mime ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      ext === ".docx"
     ) {
       const result = await mammoth.extractRawText({ buffer: req.file.buffer });
       text = result.value || "";
-    } else {
-      return res.status(400).json({ error: "Unsupported file type" });
+    } else if (mime === "text/plain" || ext === ".txt") {
+      text = req.file.buffer.toString("utf-8");
+    } else if (mime === "application/octet-stream") {
+      // Fallback by extension when browser doesn't set a specific mimetype
+      if (ext === ".pdf") {
+        const data = await pdfParse(req.file.buffer);
+        text = data.text || "";
+      } else if (ext === ".docx") {
+        const result = await mammoth.extractRawText({
+          buffer: req.file.buffer,
+        });
+        text = result.value || "";
+      } else if (ext === ".txt") {
+        text = req.file.buffer.toString("utf-8");
+      }
     }
+
+    if (!text) {
+      return res.status(400).json({
+        error:
+          "Unsupported file type. Please upload PDF (.pdf), DOCX (.docx), or TXT (.txt)",
+      });
+    }
+
     return res.json({ text });
   } catch (e) {
     console.error(e);
