@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "server:dev",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": { "cwd": "${workspaceFolder}/server" },
+      "isBackground": true,
+      "problemMatcher": "$eslint-stylish"
+    },
+    {
+      "label": "client:dev",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": { "cwd": "${workspaceFolder}/client" },
+      "isBackground": true
+    },
+    {
+      "label": "dev:all",
+      "type": "shell",
+      "dependsOn": ["server:dev", "client:dev"],
+      "command": "echo dev servers started",
+      "problemMatcher": []
+    }
+  ]
+}
